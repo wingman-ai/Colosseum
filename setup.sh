@@ -40,7 +40,7 @@ done
 if [ "$(uname)" == "Darwin" ]; then # osx
     brew update
     # Update below line for newer versions
-    #brew install llvm@8
+    #brew install llvm@13
     brew install llvm
 else #linux
     sudo apt-get update

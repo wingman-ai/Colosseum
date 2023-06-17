@@ -57,8 +57,8 @@ fi
 if [ "$(uname)" == "Darwin" ]; then
     # llvm v8 is too old for Big Sur see
     # https://github.com/microsoft/AirSim/issues/3691
-    #export CC=/usr/local/opt/llvm@8/bin/clang
-    #export CXX=/usr/local/opt/llvm@8/bin/clang++
+    #export CC=/opt/homebrew/opt/llvm@13/bin/clang
+    #export CXX=/opt/homebrew/opt/llvm@13/bin/clang++
     #now pick up whatever setup.sh installs
     export CC="$(brew --prefix)/opt/llvm/bin/clang"
     export CXX="$(brew --prefix)/opt/llvm/bin/clang++"
@@ -103,11 +103,11 @@ fi
 pushd $build_dir  >/dev/null
 if $debug; then
     folder_name="Debug"
-    "$CMAKE" ../cmake -DCMAKE_BUILD_TYPE=Debug $CMAKE_VARS \
+    "$CMAKE" ../cmake -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_BUILD_TYPE=Debug $CMAKE_VARS \
         || (popd && rm -r $build_dir && exit 1)   
 else
     folder_name="Release"
-    "$CMAKE" ../cmake -DCMAKE_BUILD_TYPE=Release $CMAKE_VARS \
+    "$CMAKE" ../cmake -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_BUILD_TYPE=Release $CMAKE_VARS \
         || (popd && rm -r $build_dir && exit 1)
 fi
 popd >/dev/null
