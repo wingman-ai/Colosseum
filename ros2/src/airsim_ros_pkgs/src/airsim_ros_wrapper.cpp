@@ -1225,17 +1225,30 @@ void AirsimROSWrapper::append_static_camera_tf(VehicleROS* vehicle_ros, const st
 void AirsimROSWrapper::img_response_timer_cb()
 {
     try {
-        int image_response_idx = 0;
-        for (const auto& airsim_img_request_vehicle_name_pair : airsim_img_request_vehicle_name_pair_vec_) {
-            const std::vector<ImageResponse>& img_response = airsim_client_images_.simGetImages(airsim_img_request_vehicle_name_pair.first, airsim_img_request_vehicle_name_pair.second);
+        std::vector<ImageRequest> batch_requests;
+        std::vector<int> request_counts; // To keep track of number of requests per vehicle
 
-            if (img_response.size() == airsim_img_request_vehicle_name_pair.first.size()) {
-                process_and_publish_img_response(img_response, image_response_idx, airsim_img_request_vehicle_name_pair.second);
-                image_response_idx += img_response.size();
+        // Loop through each pair and collect all requests into a single batch
+        for (const auto& pair : airsim_img_request_vehicle_name_pair_vec_) {
+            for (const auto& request : pair.first) {
+                batch_requests.push_back(request);
+            }
+            request_counts.push_back(pair.first.size());
+        }
+
+        // Send the batch request
+        const std::vector<ImageResponse>& batch_responses = airsim_client_images_.simGetImages(batch_requests);
+
+        // Process responses for each vehicle
+        int image_response_idx = 0;
+        for (size_t i = 0; i < airsim_img_request_vehicle_name_pair_vec_.size(); ++i) {
+            if (image_response_idx + request_counts[i] <= batch_responses.size()) {
+                std::vector<ImageResponse> img_response(batch_responses.begin() + image_response_idx, batch_responses.begin() + image_response_idx + request_counts[i]);
+                process_and_publish_img_response(img_response, image_response_idx, airsim_img_request_vehicle_name_pair_vec_[i].second);
+                image_response_idx += request_counts[i];
             }
         }
     }
-
     catch (rpc::rpc_error& e) {
         std::string msg = e.get_error().as<std::string>();
         RCLCPP_ERROR(nh_->get_logger(), "Exception raised by the API, didn't get image response.\n%s", msg.c_str());
