@@ -300,7 +300,7 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
     }
 
     // todo add per vehicle reset in AirLib API
-    reset_srvr_ = nh_->create_service<airsim_interfaces::srv::Reset>("~/reset", std::bind(&AirsimROSWrapper::reset_srv_cb, this, _1, _2));
+    reset_srvr_ = nh_->create_service<std_srvs::srv::Trigger>("~/reset", std::bind(&AirsimROSWrapper::reset_srv_cb, this, _1, _2));
 
     if (publish_clock_) {
         clock_pub_ = nh_->create_publisher<rosgraph_msgs::msg::Clock>("~/clock", 1);
@@ -438,13 +438,14 @@ bool AirsimROSWrapper::land_all_srv_cb(std::shared_ptr<airsim_interfaces::srv::L
 
 // todo add reset by vehicle_name API to airlib
 // todo not async remove wait_on_last_task
-bool AirsimROSWrapper::reset_srv_cb(std::shared_ptr<airsim_interfaces::srv::Reset::Request> request, std::shared_ptr<airsim_interfaces::srv::Reset::Response> response)
+bool AirsimROSWrapper::reset_srv_cb(std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
     unused(request);
-    unused(response);
     std::lock_guard<std::mutex> guard(control_mutex_);
 
     airsim_client_->reset();
+    response->success = true;
+    response->message = "reset";
     return true; //todo
 }
 

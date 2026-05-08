@@ -20,7 +20,6 @@ STRICT_MODE_OFF //todo what does this do?
 #include <airsim_interfaces/msg/gps_yaw.hpp>
 #include <airsim_interfaces/srv/land.hpp>
 #include <airsim_interfaces/srv/land_group.hpp>
-#include <airsim_interfaces/srv/reset.hpp>
 #include <airsim_interfaces/srv/takeoff.hpp>
 #include <airsim_interfaces/srv/takeoff_group.hpp>
 #include <airsim_interfaces/msg/vel_cmd.hpp>
@@ -52,6 +51,7 @@ STRICT_MODE_OFF //todo what does this do?
 #include <sensor_msgs/msg/range.hpp>
 #include <rosgraph_msgs/msg/clock.hpp>
 #include <std_srvs/srv/empty.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -225,7 +225,7 @@ private:
     bool land_srv_cb(const std::shared_ptr<airsim_interfaces::srv::Land::Request> request, const std::shared_ptr<airsim_interfaces::srv::Land::Response> response, const std::string& vehicle_name);
     bool land_group_srv_cb(const std::shared_ptr<airsim_interfaces::srv::LandGroup::Request> request, const std::shared_ptr<airsim_interfaces::srv::LandGroup::Response> response);
     bool land_all_srv_cb(const std::shared_ptr<airsim_interfaces::srv::Land::Request> request, const std::shared_ptr<airsim_interfaces::srv::Land::Response> response);
-    bool reset_srv_cb(const std::shared_ptr<airsim_interfaces::srv::Reset::Request> request, const std::shared_ptr<airsim_interfaces::srv::Reset::Response> response);
+    bool reset_srv_cb(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, const std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
     /// ROS tf broadcasters
     void publish_camera_tf(const ImageResponse& img_response, const rclcpp::Time& ros_time, const std::string& frame_id, const std::string& child_frame_id);
@@ -297,7 +297,7 @@ private:
 
     AIRSIM_MODE airsim_mode_ = AIRSIM_MODE::DRONE;
 
-    rclcpp::Service<airsim_interfaces::srv::Reset>::SharedPtr reset_srvr_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srvr_;
     rclcpp::Publisher<airsim_interfaces::msg::GPSYaw>::SharedPtr origin_geo_point_pub_; // home geo coord of drones
     msr::airlib::GeoPoint origin_geo_point_; // gps coord of unreal origin
     airsim_interfaces::msg::GPSYaw origin_geo_point_msg_; // todo duplicate
