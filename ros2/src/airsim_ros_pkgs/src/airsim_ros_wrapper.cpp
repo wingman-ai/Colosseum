@@ -967,9 +967,12 @@ rclcpp::Time AirsimROSWrapper::update_state()
             auto rpc = static_cast<msr::airlib::MultirotorRpcLibClient*>(airsim_client_.get());
             drone->curr_drone_state_ = rpc->getMultirotorState(vehicle_ros->vehicle_name_);
 
-            vehicle_time = rclcpp::Time(drone->curr_drone_state_.timestamp);
+            const rclcpp::Time sim_time(drone->curr_drone_state_.timestamp);
+            vehicle_time = publish_clock_ ? sim_time : curr_ros_time;
             if (!got_sim_time) {
-                curr_ros_time = vehicle_time;
+                if (publish_clock_) {
+                    curr_ros_time = sim_time;
+                }
                 got_sim_time = true;
             }
 
@@ -983,9 +986,12 @@ rclcpp::Time AirsimROSWrapper::update_state()
             auto rpc = static_cast<msr::airlib::CarRpcLibClient*>(airsim_client_.get());
             car->curr_car_state_ = rpc->getCarState(vehicle_ros->vehicle_name_);
 
-            vehicle_time = rclcpp::Time(car->curr_car_state_.timestamp);
+            const rclcpp::Time sim_time(car->curr_car_state_.timestamp);
+            vehicle_time = publish_clock_ ? sim_time : curr_ros_time;
             if (!got_sim_time) {
-                curr_ros_time = vehicle_time;
+                if (publish_clock_) {
+                    curr_ros_time = sim_time;
+                }
                 got_sim_time = true;
             }
 
@@ -995,6 +1001,7 @@ rclcpp::Time AirsimROSWrapper::update_state()
             vehicle_ros->curr_odom_ = get_odom_msg_from_car_state(car->curr_car_state_);
 
             airsim_interfaces::msg::CarState state_msg = get_roscarstate_msg_from_car_state(car->curr_car_state_);
+            state_msg.header.stamp = vehicle_time;
             state_msg.header.frame_id = vehicle_ros->vehicle_name_;
             car->car_state_msg_ = state_msg;
         }
@@ -1039,31 +1046,45 @@ void AirsimROSWrapper::publish_vehicle_state()
         for (auto& sensor_publisher : vehicle_ros->barometer_pubs_) {
             auto baro_data = airsim_client_->getBarometerData(sensor_publisher.sensor_name, vehicle_ros->vehicle_name_);
             airsim_interfaces::msg::Altimeter alt_msg = get_altimeter_msg_from_airsim(baro_data);
+            if (!publish_clock_) {
+                alt_msg.header.stamp = vehicle_ros->stamp_;
+            }
             alt_msg.header.frame_id = vehicle_ros->vehicle_name_;
             sensor_publisher.publisher->publish(alt_msg);
         }
-
         for (auto& sensor_publisher : vehicle_ros->imu_pubs_) {
             auto imu_data = airsim_client_->getImuData(sensor_publisher.sensor_name, vehicle_ros->vehicle_name_);
             sensor_msgs::msg::Imu imu_msg = get_imu_msg_from_airsim(imu_data);
+            if (!publish_clock_) {
+                imu_msg.header.stamp = vehicle_ros->stamp_;
+            }
             imu_msg.header.frame_id = vehicle_ros->vehicle_name_;
             sensor_publisher.publisher->publish(imu_msg);
         }
         for (auto& sensor_publisher : vehicle_ros->distance_pubs_) {
             auto distance_data = airsim_client_->getDistanceSensorData(sensor_publisher.sensor_name, vehicle_ros->vehicle_name_);
             sensor_msgs::msg::Range dist_msg = get_range_from_airsim(distance_data);
+            if (!publish_clock_) {
+                dist_msg.header.stamp = vehicle_ros->stamp_;
+            }
             dist_msg.header.frame_id = vehicle_ros->vehicle_name_;
             sensor_publisher.publisher->publish(dist_msg);
         }
         for (auto& sensor_publisher : vehicle_ros->gps_pubs_) {
             auto gps_data = airsim_client_->getGpsData(sensor_publisher.sensor_name, vehicle_ros->vehicle_name_);
             sensor_msgs::msg::NavSatFix gps_msg = get_gps_msg_from_airsim(gps_data);
+            if (!publish_clock_) {
+                gps_msg.header.stamp = vehicle_ros->stamp_;
+            }
             gps_msg.header.frame_id = vehicle_ros->vehicle_name_;
             sensor_publisher.publisher->publish(gps_msg);
         }
         for (auto& sensor_publisher : vehicle_ros->magnetometer_pubs_) {
             auto mag_data = airsim_client_->getMagnetometerData(sensor_publisher.sensor_name, vehicle_ros->vehicle_name_);
             sensor_msgs::msg::MagneticField mag_msg = get_mag_msg_from_airsim(mag_data);
+            if (!publish_clock_) {
+                mag_msg.header.stamp = vehicle_ros->stamp_;
+            }
             mag_msg.header.frame_id = vehicle_ros->vehicle_name_;
             sensor_publisher.publisher->publish(mag_msg);
         }
@@ -1251,6 +1272,9 @@ void AirsimROSWrapper::lidar_timer_cb()
                 for (auto& lidar_publisher : vehicle_name_ptr_pair.second->lidar_pubs_) {
                     auto lidar_data = airsim_client_lidar_.getLidarData(lidar_publisher.sensor_name, vehicle_name_ptr_pair.first);
                     sensor_msgs::msg::PointCloud2 lidar_msg = get_lidar_msg_from_airsim(lidar_data, vehicle_name_ptr_pair.first, lidar_publisher.sensor_name);
+                    if (!publish_clock_) {
+                        lidar_msg.header.stamp = nh_lidar_->now();
+                    }
                     lidar_publisher.publisher->publish(lidar_msg);
                 }
             }
@@ -1266,11 +1290,10 @@ std::shared_ptr<sensor_msgs::msg::Image> AirsimROSWrapper::get_img_msg_from_resp
                                                                                      const rclcpp::Time curr_ros_time,
                                                                                      const std::string frame_id)
 {
-    unused(curr_ros_time);
     std::shared_ptr<sensor_msgs::msg::Image> img_msg_ptr = std::make_shared<sensor_msgs::msg::Image>();
     img_msg_ptr->data = img_response.image_data_uint8;
     img_msg_ptr->step = img_response.image_data_uint8.size() / img_response.height;
-    img_msg_ptr->header.stamp = rclcpp::Time(img_response.time_stamp);
+    img_msg_ptr->header.stamp = curr_ros_time;
     img_msg_ptr->header.frame_id = frame_id;
     img_msg_ptr->height = img_response.height;
     img_msg_ptr->width = img_response.width;
@@ -1285,7 +1308,6 @@ std::shared_ptr<sensor_msgs::msg::Image> AirsimROSWrapper::get_depth_img_msg_fro
                                                                                            const rclcpp::Time curr_ros_time,
                                                                                            const std::string frame_id)
 {
-    unused(curr_ros_time);
     auto depth_img_msg = std::make_shared<sensor_msgs::msg::Image>();
     depth_img_msg->width = img_response.width;
     depth_img_msg->height = img_response.height;
@@ -1294,7 +1316,7 @@ std::shared_ptr<sensor_msgs::msg::Image> AirsimROSWrapper::get_depth_img_msg_fro
     depth_img_msg->encoding = "32FC1";
     depth_img_msg->step = depth_img_msg->data.size() / img_response.height;
     depth_img_msg->is_bigendian = 0;
-    depth_img_msg->header.stamp = rclcpp::Time(img_response.time_stamp);
+    depth_img_msg->header.stamp = curr_ros_time;
     depth_img_msg->header.frame_id = frame_id;
     return depth_img_msg;
 }
@@ -1324,28 +1346,29 @@ void AirsimROSWrapper::process_and_publish_img_response(const std::vector<ImageR
     int img_response_idx_internal = img_response_idx;
 
     for (const auto& curr_img_response : img_response_vec) {
+        const rclcpp::Time ros_time = publish_clock_ ? rclcpp::Time(curr_img_response.time_stamp) : curr_ros_time;
         // todo publishing a tf for each capture type seems stupid. but it foolproofs us against render thread's async stuff, I hope.
         // Ideally, we should loop over cameras and then captures, and publish only one tf.
-        publish_camera_tf(curr_img_response, curr_ros_time, vehicle_name, curr_img_response.camera_name);
+        publish_camera_tf(curr_img_response, ros_time, vehicle_name, curr_img_response.camera_name);
 
         // todo simGetCameraInfo is wrong + also it's only for image type -1.
         // msr::airlib::CameraInfo camera_info = airsim_client_.simGetCameraInfo(curr_img_response.camera_name);
 
         // update timestamp of saved cam info msgs
 
-        camera_info_msg_vec_[img_response_idx_internal].header.stamp = rclcpp::Time(curr_img_response.time_stamp);
+        camera_info_msg_vec_[img_response_idx_internal].header.stamp = ros_time;
         cam_info_pub_vec_[img_response_idx_internal]->publish(camera_info_msg_vec_[img_response_idx_internal]);
 
         // DepthPlanar / DepthPerspective / DepthVis / DisparityNormalized
         if (curr_img_response.pixels_as_float) {
             image_pub_vec_[img_response_idx_internal].publish(get_depth_img_msg_from_response(curr_img_response,
-                                                                                              curr_ros_time,
+                                                                                              ros_time,
                                                                                               curr_img_response.camera_name + "_optical"));
         }
         // Scene / Segmentation / SurfaceNormals / Infrared
         else {
             image_pub_vec_[img_response_idx_internal].publish(get_img_msg_from_response(curr_img_response,
-                                                                                        curr_ros_time,
+                                                                                        ros_time,
                                                                                         curr_img_response.camera_name + "_optical"));
         }
         img_response_idx_internal++;
@@ -1357,9 +1380,8 @@ void AirsimROSWrapper::process_and_publish_img_response(const std::vector<ImageR
 // We first do a change of basis to camera optical frame (Z forward, X right, Y down)
 void AirsimROSWrapper::publish_camera_tf(const ImageResponse& img_response, const rclcpp::Time& ros_time, const std::string& frame_id, const std::string& child_frame_id)
 {
-    unused(ros_time);
     geometry_msgs::msg::TransformStamped cam_tf_body_msg;
-    cam_tf_body_msg.header.stamp = rclcpp::Time(img_response.time_stamp);
+    cam_tf_body_msg.header.stamp = ros_time;
     cam_tf_body_msg.header.frame_id = frame_id;
     cam_tf_body_msg.child_frame_id = frame_id + "/" + child_frame_id + "_body";
     cam_tf_body_msg.transform = get_transform_msg_from_airsim(img_response.camera_position, img_response.camera_orientation);
@@ -1369,7 +1391,7 @@ void AirsimROSWrapper::publish_camera_tf(const ImageResponse& img_response, cons
     }
 
     geometry_msgs::msg::TransformStamped cam_tf_optical_msg;
-    cam_tf_optical_msg.header.stamp = rclcpp::Time(img_response.time_stamp);
+    cam_tf_optical_msg.header.stamp = ros_time;
     cam_tf_optical_msg.header.frame_id = frame_id;
     cam_tf_optical_msg.child_frame_id = frame_id + "/" + child_frame_id + "_optical";
     cam_tf_optical_msg.transform = get_camera_optical_tf_from_body_tf(cam_tf_body_msg.transform);
