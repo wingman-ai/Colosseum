@@ -1262,6 +1262,18 @@ void AirsimROSWrapper::img_response_timer_cb()
         std::string msg = e.get_error().as<std::string>();
         RCLCPP_ERROR(nh_->get_logger(), "Exception raised by the API, didn't get image response.\n%s", msg.c_str());
     }
+    // simGetImages blocks until the Unreal side answers, and rpclib gives up
+    // after the client's timeout (60 s by default) by throwing rpc::timeout --
+    // which is not an rpc_error. Uncaught, it escapes this timer callback and
+    // terminates the process, so one slow image response permanently kills the
+    // camera publishers while the rest of the node keeps running. Swallow it
+    // and let the next tick retry instead.
+    catch (const rpc::timeout& e) {
+        RCLCPP_WARN(nh_->get_logger(), "Timed out waiting for image response; retrying.\n%s", e.what());
+    }
+    catch (const std::exception& e) {
+        RCLCPP_ERROR(nh_->get_logger(), "Unexpected error getting image response; retrying.\n%s", e.what());
+    }
 }
 
 void AirsimROSWrapper::lidar_timer_cb()
