@@ -34,7 +34,11 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'is_vulkan': False,
-                'update_airsim_img_response_every_n_sec': 0.05,
+                # Poll images at 30 Hz. The RPC round trip is what actually paces this loop (a
+                # slower Unreal just makes the timer fire back-to-back), so the period only caps
+                # the rate on hosts that can render faster: the Steam Deck at 640x400 went from
+                # 20 Hz (this cap) to 23 Hz (GPU-bound).
+                'update_airsim_img_response_every_n_sec': 0.033,
                 'update_airsim_control_every_n_sec': 0.01,
                 'update_lidar_every_n_sec': 0.01,
                 'publish_clock': LaunchConfiguration('publish_clock'),
