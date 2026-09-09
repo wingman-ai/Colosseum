@@ -191,7 +191,7 @@ private:
     };
 
     /// ROS timer callbacks
-    void img_response_timer_cb(); // update images from airsim_client_ every nth sec
+    void img_response_timer_cb(size_t request_idx); // one timer per camera capture, each on its own RPC connection
     void drone_state_timer_cb(); // update drone state from airsim_client_ every nth sec
     void lidar_timer_cb();
 
@@ -311,7 +311,7 @@ private:
     std::string host_ip_;
     std::unique_ptr<msr::airlib::RpcLibClientBase> airsim_client_;
     // seperate busy connections to airsim, update in their own thread
-    msr::airlib::RpcLibClientBase airsim_client_images_;
+    std::vector<std::unique_ptr<msr::airlib::RpcLibClientBase>> airsim_clients_images_; // one per camera capture
     msr::airlib::RpcLibClientBase airsim_client_lidar_;
 
     std::shared_ptr<rclcpp::Node> nh_;
@@ -344,7 +344,7 @@ private:
     double vel_cmd_duration_;
 
     /// ROS Timers.
-    rclcpp::TimerBase::SharedPtr airsim_img_response_timer_;
+    std::vector<rclcpp::TimerBase::SharedPtr> airsim_img_response_timers_;
     rclcpp::TimerBase::SharedPtr airsim_control_update_timer_;
     rclcpp::TimerBase::SharedPtr airsim_lidar_update_timer_;
 
