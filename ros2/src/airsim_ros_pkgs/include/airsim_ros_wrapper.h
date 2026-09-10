@@ -355,6 +355,7 @@ private:
 
     typedef std::pair<std::vector<ImageRequest>, std::string> airsim_img_request_vehicle_name_pair;
     std::vector<airsim_img_request_vehicle_name_pair> airsim_img_request_vehicle_name_pair_vec_;
+    std::vector<bool> img_request_publishes_tf_; // one capture per camera broadcasts that camera's tf
     std::vector<image_transport::Publisher> image_pub_vec_;
     std::vector<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr> cam_info_pub_vec_;
 

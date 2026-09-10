@@ -122,6 +122,10 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
     origin_geo_point_pub_ = nh_->create_publisher<airsim_interfaces::msg::GPSYaw>("~/origin_geo_point", 10);
 
     airsim_img_request_vehicle_name_pair_vec_.clear();
+    img_request_publishes_tf_.clear();
+    airsim_clients_images_.clear();
+    airsim_img_callback_groups_.clear();
+    airsim_img_response_timers_.clear();
     image_pub_vec_.clear();
     cam_info_pub_vec_.clear();
     camera_info_msg_vec_.clear();
@@ -194,6 +198,10 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
 
             set_nans_to_zeros_in_pose(*vehicle_setting, camera_setting);
             append_static_camera_tf(vehicle_ros.get(), curr_camera_name, camera_setting);
+            // every capture of a camera would otherwise broadcast that camera's tf, which used to be
+            // harmless (one batched call, one pose, one stamp) but now means two threads writing the
+            // same frame with poses sampled at different instants. Let the first capture own it.
+            bool camera_tf_owner = true;
             // camera_setting.gimbal
 
             // iterate over capture_setting std::map<int, CaptureSetting> capture_settings
@@ -207,10 +215,14 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
                     // if scene / segmentation / surface normals / infrared, get uncompressed image with pixels_as_floats = false
                     if (curr_image_type == ImageType::Scene || curr_image_type == ImageType::Segmentation || curr_image_type == ImageType::SurfaceNormals || curr_image_type == ImageType::Infrared) {
                         airsim_img_request_vehicle_name_pair_vec_.emplace_back(std::vector<ImageRequest>{ ImageRequest(curr_camera_name, curr_image_type, false, false) }, curr_vehicle_name);
+                        img_request_publishes_tf_.push_back(camera_tf_owner);
+                        camera_tf_owner = false;
                     }
                     // if {DepthPlanar, DepthPerspective,DepthVis, DisparityNormalized}, get float image
                     else {
                         airsim_img_request_vehicle_name_pair_vec_.emplace_back(std::vector<ImageRequest>{ ImageRequest(curr_camera_name, curr_image_type, true) }, curr_vehicle_name);
+                        img_request_publishes_tf_.push_back(camera_tf_owner);
+                        camera_tf_owner = false;
                     }
 
                     const std::string camera_topic = topic_prefix + "/" + curr_camera_name + "/" + image_type_int_to_string_map_.at(capture_setting.image_type);
@@ -1361,9 +1373,12 @@ void AirsimROSWrapper::process_and_publish_img_response(const std::vector<ImageR
 
     for (const auto& curr_img_response : img_response_vec) {
         const rclcpp::Time ros_time = publish_clock_ ? rclcpp::Time(curr_img_response.time_stamp) : curr_ros_time;
-        // todo publishing a tf for each capture type seems stupid. but it foolproofs us against render thread's async stuff, I hope.
-        // Ideally, we should loop over cameras and then captures, and publish only one tf.
-        publish_camera_tf(curr_img_response, ros_time, vehicle_name, curr_img_response.camera_name);
+        // Only the first capture of a camera broadcasts that camera's tf: with one request per
+        // capture the others would write the same frame from another thread, with a pose sampled
+        // at a different instant.
+        if (img_request_publishes_tf_[img_response_idx_internal]) {
+            publish_camera_tf(curr_img_response, ros_time, vehicle_name, curr_img_response.camera_name);
+        }
 
         // todo simGetCameraInfo is wrong + also it's only for image type -1.
         // msr::airlib::CameraInfo camera_info = airsim_client_.simGetCameraInfo(curr_img_response.camera_name);
