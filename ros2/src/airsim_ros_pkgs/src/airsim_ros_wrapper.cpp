@@ -30,7 +30,6 @@ AirsimROSWrapper::AirsimROSWrapper(const std::shared_ptr<rclcpp::Node> nh, const
     , airsim_settings_parser_(host_ip)
     , host_ip_(host_ip)
     , airsim_client_(nullptr)
-    , airsim_client_images_(host_ip)
     , airsim_client_lidar_(host_ip)
     , nh_(nh)
     , nh_img_(nh_img)
@@ -70,7 +69,9 @@ void AirsimROSWrapper::initialize_airsim()
             airsim_client_ = std::unique_ptr<msr::airlib::RpcLibClientBase>(new msr::airlib::CarRpcLibClient(host_ip_));
         }
         airsim_client_->confirmConnection();
-        airsim_client_images_.confirmConnection();
+        for (auto& client : airsim_clients_images_) {
+            client->confirmConnection();
+        }
         airsim_client_lidar_.confirmConnection();
 
         for (const auto& vehicle_name_ptr_pair : vehicle_name_ptr_map_) {
@@ -121,6 +122,10 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
     origin_geo_point_pub_ = nh_->create_publisher<airsim_interfaces::msg::GPSYaw>("~/origin_geo_point", 10);
 
     airsim_img_request_vehicle_name_pair_vec_.clear();
+    img_request_publishes_tf_.clear();
+    airsim_clients_images_.clear();
+    airsim_img_callback_groups_.clear();
+    airsim_img_response_timers_.clear();
     image_pub_vec_.clear();
     cam_info_pub_vec_.clear();
     camera_info_msg_vec_.clear();
@@ -193,9 +198,11 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
 
             set_nans_to_zeros_in_pose(*vehicle_setting, camera_setting);
             append_static_camera_tf(vehicle_ros.get(), curr_camera_name, camera_setting);
+            // every capture of a camera would otherwise broadcast that camera's tf, which used to be
+            // harmless (one batched call, one pose, one stamp) but now means two threads writing the
+            // same frame with poses sampled at different instants. Let the first capture own it.
+            bool camera_tf_owner = true;
             // camera_setting.gimbal
-            std::vector<ImageRequest> current_image_request_vec;
-            current_image_request_vec.clear();
 
             // iterate over capture_setting std::map<int, CaptureSetting> capture_settings
             for (const auto& curr_capture_elem : camera_setting.capture_settings) {
@@ -207,11 +214,15 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
                     ImageType curr_image_type = msr::airlib::Utils::toEnum<ImageType>(capture_setting.image_type);
                     // if scene / segmentation / surface normals / infrared, get uncompressed image with pixels_as_floats = false
                     if (curr_image_type == ImageType::Scene || curr_image_type == ImageType::Segmentation || curr_image_type == ImageType::SurfaceNormals || curr_image_type == ImageType::Infrared) {
-                        current_image_request_vec.push_back(ImageRequest(curr_camera_name, curr_image_type, false, false));
+                        airsim_img_request_vehicle_name_pair_vec_.emplace_back(std::vector<ImageRequest>{ ImageRequest(curr_camera_name, curr_image_type, false, false) }, curr_vehicle_name);
+                        img_request_publishes_tf_.push_back(camera_tf_owner);
+                        camera_tf_owner = false;
                     }
                     // if {DepthPlanar, DepthPerspective,DepthVis, DisparityNormalized}, get float image
                     else {
-                        current_image_request_vec.push_back(ImageRequest(curr_camera_name, curr_image_type, true));
+                        airsim_img_request_vehicle_name_pair_vec_.emplace_back(std::vector<ImageRequest>{ ImageRequest(curr_camera_name, curr_image_type, true) }, curr_vehicle_name);
+                        img_request_publishes_tf_.push_back(camera_tf_owner);
+                        camera_tf_owner = false;
                     }
 
                     const std::string camera_topic = topic_prefix + "/" + curr_camera_name + "/" + image_type_int_to_string_map_.at(capture_setting.image_type);
@@ -220,8 +231,6 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
                     camera_info_msg_vec_.push_back(generate_cam_info(curr_camera_name, camera_setting, capture_setting));
                 }
             }
-            // push back pair (vector of image captures, current vehicle name)
-            airsim_img_request_vehicle_name_pair_vec_.push_back(std::make_pair(current_image_request_vec, curr_vehicle_name));
         }
 
         // iterate over sensors
@@ -306,13 +315,20 @@ void AirsimROSWrapper::create_ros_pubs_from_settings_json()
         clock_pub_ = nh_->create_publisher<rosgraph_msgs::msg::Clock>("~/clock", 1);
     }
 
-    // if >0 cameras, add one more thread for img_request_timer_cb
+    // One request, timer, callback group and RPC connection per camera capture. A simGetImages
+    // call holds Unreal's game thread for the render, then the readback, msgpack transfer and
+    // ROS publish run on the requester; with every capture in one call those phases serialize
+    // (Scene 1280x800 + depth 640x480: ~70 ms per cycle, 14 Hz), as independent streams they
+    // overlap, and a slow capture no longer paces the others.
     if (!airsim_img_request_vehicle_name_pair_vec_.empty()) {
         double update_airsim_img_response_every_n_sec;
         nh_->get_parameter("update_airsim_img_response_every_n_sec", update_airsim_img_response_every_n_sec);
-        auto cb = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-        airsim_img_callback_groups_.push_back(cb);
-        airsim_img_response_timer_ = nh_img_->create_wall_timer(std::chrono::duration<double>(update_airsim_img_response_every_n_sec), std::bind(&AirsimROSWrapper::img_response_timer_cb, this), cb);
+        for (size_t i = 0; i < airsim_img_request_vehicle_name_pair_vec_.size(); ++i) {
+            airsim_clients_images_.push_back(std::make_unique<msr::airlib::RpcLibClientBase>(host_ip_));
+            auto cb = nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+            airsim_img_callback_groups_.push_back(cb);
+            airsim_img_response_timers_.push_back(nh_img_->create_wall_timer(std::chrono::duration<double>(update_airsim_img_response_every_n_sec), [this, i]() { img_response_timer_cb(i); }, cb));
+        }
         is_used_img_timer_cb_queue_ = true;
     }
 
@@ -1244,23 +1260,33 @@ void AirsimROSWrapper::append_static_camera_tf(VehicleROS* vehicle_ros, const st
     vehicle_ros->static_tf_msg_vec_.emplace_back(static_cam_tf_optical_msg);
 }
 
-void AirsimROSWrapper::img_response_timer_cb()
+void AirsimROSWrapper::img_response_timer_cb(size_t request_idx)
 {
     try {
-        int image_response_idx = 0;
-        for (const auto& airsim_img_request_vehicle_name_pair : airsim_img_request_vehicle_name_pair_vec_) {
-            const std::vector<ImageResponse>& img_response = airsim_client_images_.simGetImages(airsim_img_request_vehicle_name_pair.first, airsim_img_request_vehicle_name_pair.second);
+        // requests and publishers were pushed in the same order, one entry per capture
+        const auto& request = airsim_img_request_vehicle_name_pair_vec_[request_idx];
+        const std::vector<ImageResponse>& img_response = airsim_clients_images_[request_idx]->simGetImages(request.first, request.second);
 
-            if (img_response.size() == airsim_img_request_vehicle_name_pair.first.size()) {
-                process_and_publish_img_response(img_response, image_response_idx, airsim_img_request_vehicle_name_pair.second);
-                image_response_idx += img_response.size();
-            }
+        if (img_response.size() == request.first.size()) {
+            process_and_publish_img_response(img_response, static_cast<int>(request_idx), request.second);
         }
     }
 
     catch (rpc::rpc_error& e) {
         std::string msg = e.get_error().as<std::string>();
         RCLCPP_ERROR(nh_->get_logger(), "Exception raised by the API, didn't get image response.\n%s", msg.c_str());
+    }
+    // simGetImages blocks until the Unreal side answers, and rpclib gives up
+    // after the client's timeout (60 s by default) by throwing rpc::timeout --
+    // which is not an rpc_error. Uncaught, it escapes this timer callback and
+    // terminates the process, so one slow image response permanently kills the
+    // camera publishers while the rest of the node keeps running. Swallow it
+    // and let the next tick retry instead.
+    catch (const rpc::timeout& e) {
+        RCLCPP_WARN(nh_->get_logger(), "Timed out waiting for image response; retrying.\n%s", e.what());
+    }
+    catch (const std::exception& e) {
+        RCLCPP_ERROR(nh_->get_logger(), "Unexpected error getting image response; retrying.\n%s", e.what());
     }
 }
 
@@ -1347,9 +1373,12 @@ void AirsimROSWrapper::process_and_publish_img_response(const std::vector<ImageR
 
     for (const auto& curr_img_response : img_response_vec) {
         const rclcpp::Time ros_time = publish_clock_ ? rclcpp::Time(curr_img_response.time_stamp) : curr_ros_time;
-        // todo publishing a tf for each capture type seems stupid. but it foolproofs us against render thread's async stuff, I hope.
-        // Ideally, we should loop over cameras and then captures, and publish only one tf.
-        publish_camera_tf(curr_img_response, ros_time, vehicle_name, curr_img_response.camera_name);
+        // Only the first capture of a camera broadcasts that camera's tf: with one request per
+        // capture the others would write the same frame from another thread, with a pose sampled
+        // at a different instant.
+        if (img_request_publishes_tf_[img_response_idx_internal]) {
+            publish_camera_tf(curr_img_response, ros_time, vehicle_name, curr_img_response.camera_name);
+        }
 
         // todo simGetCameraInfo is wrong + also it's only for image type -1.
         // msr::airlib::CameraInfo camera_info = airsim_client_.simGetCameraInfo(curr_img_response.camera_name);
