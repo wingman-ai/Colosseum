@@ -144,6 +144,19 @@ public:
 
         resolveAddress(localHost, localPort, localaddr);
 
+#ifndef _WIN32
+        // A run whose link was closed from this side leaves the port in TIME_WAIT for up to a
+        // minute, and without this the next run's bind fails with EADDRINUSE, the throw below goes
+        // uncaught on the connection thread, and the whole process aborts. A port another socket
+        // is still listening on is refused as before. POSIX only: on Windows SO_REUSEADDR lets a
+        // second socket bind a port that is in active use.
+        int reuse = 1;
+        if (::setsockopt(accept_sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<char*>(&reuse), sizeof(reuse)) != 0) {
+            auto msg = Utils::stringf("TcpClientPort set SO_REUSEADDR failed: %d\n", GetSocketError());
+            throw std::runtime_error(msg);
+        }
+#endif
+
         // bind socket to local address.
         socklen_t addrlen = sizeof(sockaddr_in);
         int rc = ::bind(accept_sock, reinterpret_cast<sockaddr*>(&localaddr), addrlen);
